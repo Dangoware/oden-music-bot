@@ -28,7 +28,11 @@ bot = commands.Bot(command_prefix="!",intents=discord.Intents.all(), shard_count
 @bot.event
 async def on_ready():
     print("Bot is ready!")
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name="ななひら"))
+    await bot.change_presence(
+        activity=discord.Activity(
+            type=discord.ActivityType.listening, name="ななひら"
+        )
+    )
 
 
 @bot.command()
