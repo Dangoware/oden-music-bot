@@ -589,4 +589,4 @@ async def on_command_error(ctx, error):
         print(error)
 
 # Run the bot using the Discord bot token
-bot.run("")
+bot.run(os.environ['DISCORD_SECRET'])
