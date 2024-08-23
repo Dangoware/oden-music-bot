@@ -1,4 +1,4 @@
-import discord, subprocess, glob, os, os.path, urllib.request, ffmpeg
+import discord, subprocess, glob, os, os.path, ffmpeg
 import re, time, datetime, yt_dlp, typing, functools
 from time import strftime, gmtime
 from yt_dlp import YoutubeDL
@@ -99,20 +99,12 @@ async def play(ctx, *, query: str = None):
 
             await song.save(filename)
 
-            # Grab thumbnail from file
-            ffmpeg_cli = ffmpeg\
-                .input(
-                    filename,
-                    t=1,
-                )\
-                .output(
-                    thumbname,
-                    f="image2"
-                )\
+            # Grab thumbnail from the file
+            (ffmpeg
+                .input(filename,t=1)
+                .output(thumbname, f="image2")
                 .overwrite_output()
-
-            print(ffmpeg_cli.get_args())
-            ffmpeg_cli.run()
+                .run())
 
 
             # Grab metadata from file
@@ -531,7 +523,7 @@ async def q(ctx, action = None, selection = None):
         else:
             thumbnail = server_info[server_id]["queue"][selection]['thumbnail']
 
-        if selection is position:
+        if selection is current_position:
             await ctx.send(":no_entry_sign: Error, cannot remove currently playing item", delete_after=3)
             return
 
@@ -546,7 +538,7 @@ async def q(ctx, action = None, selection = None):
                 print(str(server_id) + " | " + "Error while deleting song or thumbnail")
                 pass
 
-            if selection < position and position > 1:
+            if selection < current_position and current_position > 1:
                 try:
                     server_info[server_id]["queue_position"] -= 1
                 except:
