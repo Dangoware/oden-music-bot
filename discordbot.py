@@ -1,22 +1,14 @@
-import discord
-import subprocess
-import glob
-import os
-import os.path
-import urllib.request
-import ffmpeg
-import re
-import time
-import datetime
-import yt_dlp
-import typing
-import functools
-from time import strftime
-from time import gmtime
+import discord, subprocess, glob, os, os.path, urllib.request, ffmpeg
+import re, time, datetime, yt_dlp, typing, functools
+from time import strftime, gmtime
 from yt_dlp import YoutubeDL
 from asyncio import sleep
 from discord.ext import commands
 from StringProgressBar import progressBar
+import uuid
+import logging
+
+logging.basicConfig(level=logging.DEBUG)
 intents = discord.Intents.default()
 intents.message_content = True
 
@@ -45,18 +37,18 @@ async def get_ids(ctx):
     user_voice_channel = ctx.author.voice
     return server_id, voice_channel, user_voice_channel
 
-async def prepare_filesave(server_id):
+async def getFileNames(server_id):
     downloading = 1
     # Get the current unix timestamp to the nearest millisecond for the filename
-    stamp = str(int(str(time.time()).replace('.', '')))
-    id = "tmp" + stamp + ".flac"
-    thumbname = "tmp" + stamp + ".png"
+    uuid_stamp = uuid.uuid1()
+    audioname = str(uuid_stamp) + "audio"
+    thumbname = str(uuid_stamp) + "image"
 
     # Create the id and thumbnail of the attachment as "tmp<timestamp>.flac" and "tmp<timestamp>.png" respectively
     # And add the server ID as the path, making it unique
-    id = os.path.join(str(server_id),id)
-    thumbname = os.path.join(str(server_id),thumbname)
-    return id, thumbname
+    audioname = os.path.join(str(server_id), audioname)
+    thumbname = os.path.join(str(server_id), thumbname)
+    return audioname, thumbname
 
 @bot.command()
 async def play(ctx, *, query: str = None):
@@ -109,11 +101,13 @@ async def play(ctx, *, query: str = None):
     if voice_channel.is_playing():
         await ctx.send("The bot is already playing, adding song to queue", delete_after=3)
 
+    print("1");
+
     if ctx.message.attachments:
         downloading = 1
         notice = await ctx.send(":arrow_double_up: Uploading...", suppress_embeds=True)
         for song in ctx.message.attachments:
-            id, thumbname = await prepare_filesave(server_id)
+            filename, thumbname = await getFileNames(server_id)
 
             # Make sure the file is either audio or video
             filetype = song.content_type
@@ -121,15 +115,15 @@ async def play(ctx, *, query: str = None):
                 await notice.edit(content=":no_entry_sign: Not a valid video or audio file...")
                 continue
 
-            await song.save(id)
+            await song.save(filename)
 
             # Grab thumbnail from file
             f = open("tmp", "w")
-            subprocess.run(["ffmpeg", "-y", "-i", id, "-map", "0:v", "-map", "-0:V", "-c", "copy", thumbname], stderr=subprocess.STDOUT, stdout=f)
+            subprocess.run(["ffmpeg", "-y", "-i", filename, "-map", "0:v", "-map", "-0:V", "-c", "copy", thumbname], stderr=subprocess.STDOUT, stdout=f)
 
             # Grab metadata from file
             f = open("tmp", "w")
-            subprocess.run(["ffmpeg", "-y", "-i", id, "-f", "ffmetadata", str(server_id) + "/meta.txt"], stderr=subprocess.STDOUT, stdout=f)
+            subprocess.run(["ffmpeg", "-y", "-i", filename, "-f", "ffmetadata", str(server_id) + "/meta.txt"], stderr=subprocess.STDOUT, stdout=f)
 
             file_title = song.filename
             file_artist = None
@@ -159,7 +153,7 @@ async def play(ctx, *, query: str = None):
                 thumbnail = "assets/unknown.png"
 
             try:
-                duration = ffmpeg.probe(id)['format']['duration']
+                duration = ffmpeg.probe(filename)['format']['duration']
             except:
                 duration = None
 
@@ -169,7 +163,7 @@ async def play(ctx, *, query: str = None):
                 "artist": file_artist.rstrip(),
                 "album": file_album.rstrip(),
                 "url": song.url,
-                "id": id,
+                "id": filename,
                 "thumbnail": thumbnail,
                 "duration": duration
             }
@@ -180,7 +174,7 @@ async def play(ctx, *, query: str = None):
             downloading = 0
         await notice.edit(content=":white_check_mark: Successfully uploaded \"" + song.filename + "\"", delete_after=3)
     elif query[0:4] != "http" and query[0:3] != "www":
-        id, thumbname = await prepare_filesave(server_id)
+        filename, thumbname = await getFileNames(server_id)
 
         # Let the user know the bot is searching for a video
         notice = await ctx.send(":mag_right: Searching for \"" + query + "\" ...", suppress_embeds=True)
@@ -193,21 +187,7 @@ async def play(ctx, *, query: str = None):
             thumb_url = info["thumbnail"]
             duration = info["duration"]
 
-        # Download thumbnail
-        urllib.request.urlretrieve(thumb_url, thumbname)
-
-        # Use yt-dlp to download the audio file from youtube to the "tmp.flac" file
         print(str(server_id) + " | " + audio_url)
-        await notice.edit(content=":arrow_double_down: Downloading \"" + title + "\": " + audio_url, suppress=True)
-
-        # Download selected video
-        ydl_opts = {
-            'format': 'flac/bestaudio/best',
-            'outtmpl': id,
-            'quiet': True
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download(audio_url)
 
         # Create the item dictionary
         item = {
@@ -215,8 +195,9 @@ async def play(ctx, *, query: str = None):
             "artist": None,
             "album": None,
             "url": audio_url,
-            "id": id,
-            "thumbnail": thumbname,
+            "id": filename,
+            "thumbnail": None,
+            "thumbnail_url": thumb_url,
             "duration": duration
         }
 
@@ -224,7 +205,7 @@ async def play(ctx, *, query: str = None):
         queue_list[server_id].append(item)
         downloading = 0
     elif query[0:4] == "http" or query[0:3] == "www":
-        id, thumbname = await prepare_filesave(server_id)
+        filename, thumbname = await getFileNames(server_id)
 
         # Let the user know the bot is searching for a video
         notice = await ctx.send(":mag_right: Searching for \"" + query + "\" ...", suppress_embeds=True)
@@ -241,21 +222,7 @@ async def play(ctx, *, query: str = None):
             thumb_url = info["thumbnail"]
             duration = info["duration"]
 
-        # Download thumbnail
-        urllib.request.urlretrieve(thumb_url, thumbname)
-
-        # Use yt-dlp to download the audio file from youtube to the "tmp.flac" file
         print(str(server_id) + " | " + query)
-        await notice.edit(content=":arrow_double_down: Downloading \"" + title + "\": " + query, suppress=True)
-
-        # Download selected video
-        ydl_opts = {
-            'format': 'flac/bestaudio/best',
-            'outtmpl': id,
-            'quiet': True
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download(query)
 
         # Create the item dictionary
         item = {
@@ -263,12 +230,13 @@ async def play(ctx, *, query: str = None):
             "artist": None,
             "album": None,
             "url": query,
-            "id": id,
-            "thumbnail": thumbname,
+            "id": filename,
+            "thumbnail": None,
+            "thumbnail_url": thumb_url,
             "duration": duration
         }
 
-        await notice.edit(content=":white_check_mark: Downloaded \"" + title + "\": " + query, suppress=True, delete_after=3)
+        await notice.edit(content=":white_check_mark: Added \"" + title + "\": " + query, suppress=True, delete_after=3)
         queue_list[server_id].append(item)
         downloading = 0
     else:
@@ -295,6 +263,7 @@ async def play(ctx, *, query: str = None):
         song_name = queue_list[server_id][queue_position]['name']
         song_thumb = queue_list[server_id][queue_position]['thumbnail']
         song_duration = queue_list[server_id][queue_position]['duration']
+        song_thumb_url = queue_list[server_id][queue_position]['thumbnail_url']
         song_thumbname = str(int(time.time())) + ".png"
 
         # Create the embed
@@ -304,12 +273,30 @@ async def play(ctx, *, query: str = None):
             song_desc = "Name: " + song_name + "\nURL: " + song_url
 
         embed=discord.Embed(title="▶️ Playing: " + song_name, url=song_url, description=song_desc, color=0x42f5a7)
-        await playing.add_files(discord.File(song_thumb, filename=song_thumbname))
-        embed.set_image(url="attachment://" + song_thumbname)
+        if song_thumb is not None:
+            await playing.add_files(discord.File(song_thumb, filename=song_thumbname))
+            embed.set_thumbnail(url="attachment://" + song_thumbname)
+        elif song_thumb_url is not None:
+            embed.set_thumbnail(url=song_thumb_url)
+
         await playing.edit(embed=embed)
 
+        song_source = None
+        pipe = False
+        if song_url is not None:
+            song_source = subprocess.Popen(
+                ['yt-dlp', '-q', '-o', '-', '-x', song_url],
+                stdout=subprocess.PIPE,
+            ).stdout
+            pipe = True
+            print("Playing song through yt-dlp")
+        else:
+            print("Playing song from file")
+            song_source = song_id
+
         # Play the converted audio in the voice channel from the temporary file
-        player = voice_channel.play(discord.FFmpegPCMAudio(source=song_id))
+        # or the FFMPEG stream
+        player = voice_channel.play(discord.FFmpegOpusAudio(source=song_source, pipe=pipe))
         time1 = int(time.time())
         total = int(float(song_duration))
 
@@ -328,8 +315,17 @@ async def play(ctx, *, query: str = None):
                 embed=discord.Embed(title="▶️ Playing: " + song_name, url=song_url, description=song_desc, color=0x42f5a7)
             else:
                 embed=discord.Embed(title="⏸ Paused: " + song_name, url=song_url, description=song_desc, color=0x42f5a7)
-            embed.set_image(url="attachment://" + song_thumbname)
-            embed.add_field(name=str(datetime.timedelta(seconds=current)) + "/" + str(datetime.timedelta(seconds=total)), value=bardata[0], inline=False)
+
+            if song_thumb is not None:
+                embed.set_thumbnail(url="attachment://" + song_thumbname)
+            elif song_thumb_url is not None:
+                embed.set_thumbnail(url=song_thumb_url)
+
+            embed.add_field(
+                name=str(datetime.timedelta(seconds=current)) + "/" + str(datetime.timedelta(seconds=total)),
+                value=bardata[0],
+                inline=False
+            )
             await playing.edit(embed=embed)
 
         if server_info[server_id]["loop"]:
@@ -627,4 +623,4 @@ async def on_command_error(ctx, error):
         await ctx.send("Unknown command", delete_after=3)
 
 # Run the bot using the Discord bot token
-bot.run("<BOT TOKEN GOES HERE>")
+bot.run("<>")
