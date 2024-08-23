@@ -5,15 +5,18 @@ from yt_dlp import YoutubeDL
 from asyncio import sleep
 from discord.ext import commands
 from StringProgressBar import progressBar
-import uuid
 import logging
+import json
+from pprint import pprint
+
+## LOCAL IMPORTS ##
+import utils
 
 logging.basicConfig(level=logging.DEBUG)
 intents = discord.Intents.default()
 intents.message_content = True
 
 # Dictionary to store queues between servers
-queue_list = {}
 server_info = {}
 downloading = 0
 paused = False
@@ -21,45 +24,25 @@ paused = False
 # Create a new Discord client
 bot = commands.Bot(command_prefix="!",intents=discord.Intents.all(), shard_count=1)
 
+
 @bot.event
 async def on_ready():
     print("Bot is ready!")
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name="Nanahira"))
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name="ななひら"))
 
-async def delete_after_delay(ctx, delay):
-    await sleep(delay)
-    await ctx.message.delete()
-
-async def get_ids(ctx):
-    await ctx.message.delete(delay=3)
-    server_id = ctx.message.guild.id
-    voice_channel = ctx.message.guild.voice_client
-    user_voice_channel = ctx.author.voice
-    return server_id, voice_channel, user_voice_channel
-
-async def getFileNames(server_id):
-    downloading = 1
-    # Get the current unix timestamp to the nearest millisecond for the filename
-    uuid_stamp = uuid.uuid1()
-    audioname = str(uuid_stamp) + "audio"
-    thumbname = str(uuid_stamp) + "image"
-
-    # Create the id and thumbnail of the attachment as "tmp<timestamp>.flac" and "tmp<timestamp>.png" respectively
-    # And add the server ID as the path, making it unique
-    audioname = os.path.join(str(server_id), audioname)
-    thumbname = os.path.join(str(server_id), thumbname)
-    return audioname, thumbname
 
 @bot.command()
 async def play(ctx, *, query: str = None):
     # Get all the id and channel info
-    server_id, voice_channel, user_voice_channel = await get_ids(ctx)
+    server_id, voice_channel, user_voice_channel = await utils.get_ids(ctx)
 
     # Create a queue and info dictionary for the current server
-    if server_id not in queue_list:
-        queue_list[server_id] = [1]
+    if server_id not in server_info:
         server_info[server_id] = {
-            "loop": False
+            "loop": False,
+            "paused": False,
+            "queue_position": 0,
+            "queue": [],
         }
 
     # Create the server ID folder for storing downloads
@@ -70,7 +53,7 @@ async def play(ctx, *, query: str = None):
 
     # If the user is not in a voice channel, return an error message
     if user_voice_channel is None:
-        await ctx.send("You must be in a voice channel to use this command.", delete_after=3)
+        await ctx.send(":no_entry_sign: You must be in a voice channel to use this command.")
         return
 
     # Connect to the voice channel if not already connected
@@ -79,13 +62,13 @@ async def play(ctx, *, query: str = None):
 
     # If the user is not in a voice channel or the voice channel is not the same one as the bot, return an error message
     if user_voice_channel.channel != voice_channel.channel:
-        await ctx.send("You must be in the same voice channel as the bot to use this command.", delete_after=3)
+        await ctx.send(":no_entry_sign: You must be in the same voice channel as the bot to use this command.")
         return
 
     if query == None and not ctx.message.attachments:
         # If the bot is already playing, return an error message
         if voice_channel.is_playing():
-            await ctx.send(":no_entry_sign: The bot is already playing", delete_after=3)
+            await ctx.send(":no_entry_sign: The bot is already playing")
             return
 
         # If the bot is paused, resume playback
@@ -101,13 +84,11 @@ async def play(ctx, *, query: str = None):
     if voice_channel.is_playing():
         await ctx.send("The bot is already playing, adding song to queue", delete_after=3)
 
-    print("1");
-
     if ctx.message.attachments:
         downloading = 1
         notice = await ctx.send(":arrow_double_up: Uploading...", suppress_embeds=True)
         for song in ctx.message.attachments:
-            filename, thumbname = await getFileNames(server_id)
+            filename, thumbname = await utils.getFileNames(server_id)
 
             # Make sure the file is either audio or video
             filetype = song.content_type
@@ -118,33 +99,38 @@ async def play(ctx, *, query: str = None):
             await song.save(filename)
 
             # Grab thumbnail from file
-            f = open("tmp", "w")
-            subprocess.run(["ffmpeg", "-y", "-i", filename, "-map", "0:v", "-map", "-0:V", "-c", "copy", thumbname], stderr=subprocess.STDOUT, stdout=f)
+            ffmpeg_cli = ffmpeg\
+                .input(
+                    filename,
+                    t=1,
+                )\
+                .output(
+                    thumbname,
+                    f="image2"
+                )\
+                .overwrite_output()
+
+            print(ffmpeg_cli.get_args())
+            ffmpeg_cli.run()
+
 
             # Grab metadata from file
-            f = open("tmp", "w")
-            subprocess.run(["ffmpeg", "-y", "-i", filename, "-f", "ffmetadata", str(server_id) + "/meta.txt"], stderr=subprocess.STDOUT, stdout=f)
+            try:
+                metadata = ffmpeg.probe(filename)
+            except:
+                metadata = {}
 
             file_title = song.filename
-            file_artist = None
-            file_album = None
+            if "TITLE" in metadata["format"]["tags"]:
+                file_title = metadata["format"]["tags"]["TITLE"]
 
-            with open(str(server_id) + '/meta.txt', 'r') as m:
-                lines = m.readlines()
-                file_artist = "Unknown"
-                file_album = "Unknown"
-                for line in lines:
-                    if re.search(r'TITLE=', line, re.IGNORECASE):
-                        file_title = line.split('=')[1]
-                        break
-                for line in lines:
-                    if re.search(r'ARTIST=', line, re.IGNORECASE):
-                        file_artist = line.split('=')[1]
-                        break
-                for line in lines:
-                    if re.search(r'ALBUM=', line, re.IGNORECASE):
-                        file_album = line.split('=')[1]
-                        break
+            file_artist = ""
+            if "ARTIST" in metadata["format"]["tags"]:
+                file_artist = metadata["format"]["tags"]["ARTIST"]
+
+            file_album = ""
+            if "ALBUM" in metadata["format"]["tags"]:
+                file_album = metadata["format"]["tags"]["ALBUM"]
 
 
             if os.path.exists(thumbname):
@@ -153,7 +139,7 @@ async def play(ctx, *, query: str = None):
                 thumbnail = "assets/unknown.png"
 
             try:
-                duration = ffmpeg.probe(filename)['format']['duration']
+                duration = metadata['format']['duration']
             except:
                 duration = None
 
@@ -165,16 +151,16 @@ async def play(ctx, *, query: str = None):
                 "url": song.url,
                 "id": filename,
                 "thumbnail": thumbnail,
+                "thumbnail_url": None,
                 "duration": duration
             }
 
             await notice.edit(content=":white_check_mark: Successfully uploaded \"" + song.filename + "\"")
-            queue_list[server_id].append(item)
+            server_info[server_id]["queue"].append(item)
 
             downloading = 0
-        await notice.edit(content=":white_check_mark: Successfully uploaded \"" + song.filename + "\"", delete_after=3)
     elif query[0:4] != "http" and query[0:3] != "www":
-        filename, thumbname = await getFileNames(server_id)
+        filename, thumbname = await utils.getFileNames(server_id)
 
         # Let the user know the bot is searching for a video
         notice = await ctx.send(":mag_right: Searching for \"" + query + "\" ...", suppress_embeds=True)
@@ -201,11 +187,11 @@ async def play(ctx, *, query: str = None):
             "duration": duration
         }
 
-        await notice.edit(content=":white_check_mark: Downloaded " + title + ": " + audio_url, suppress=True, delete_after=3)
-        queue_list[server_id].append(item)
+        await notice.edit(content=":white_check_mark: Found " + title + ": " + audio_url, suppress=True, delete_after=3)
+        server_info[server_id]["queue"].append(item)
         downloading = 0
     elif query[0:4] == "http" or query[0:3] == "www":
-        filename, thumbname = await getFileNames(server_id)
+        filename, thumbname = await utils.getFileNames(server_id)
 
         # Let the user know the bot is searching for a video
         notice = await ctx.send(":mag_right: Searching for \"" + query + "\" ...", suppress_embeds=True)
@@ -236,8 +222,8 @@ async def play(ctx, *, query: str = None):
             "duration": duration
         }
 
-        await notice.edit(content=":white_check_mark: Added \"" + title + "\": " + query, suppress=True, delete_after=3)
-        queue_list[server_id].append(item)
+        await notice.edit(content=":white_check_mark: Found \"" + title + "\": " + query, suppress=True, delete_after=3)
+        server_info[server_id]["queue"].append(item)
         downloading = 0
     else:
         print("Error")
@@ -253,26 +239,27 @@ async def play(ctx, *, query: str = None):
     playing = await ctx.send(embed=embed)
 
     # Loop that repeats as long as the queue position has not reached the length of the queue
-    while len(queue_list[server_id]) - 1 >= queue_list[server_id][0]:
+    while len(server_info[server_id]["queue"]) >= server_info[server_id]["queue_position"]:
         # Get the current queue position
-        queue_position = queue_list[server_id][0]
+        queue_position = server_info[server_id]["queue_position"]
+        queue = server_info[server_id]["queue"]
 
         # Set song variables
-        song_id = queue_list[server_id][queue_position]['id']
-        song_url = queue_list[server_id][queue_position]['url']
-        song_name = queue_list[server_id][queue_position]['name']
-        song_thumb = queue_list[server_id][queue_position]['thumbnail']
-        song_duration = queue_list[server_id][queue_position]['duration']
-        song_thumb_url = queue_list[server_id][queue_position]['thumbnail_url']
+        song_id = queue[queue_position]['id']
+        song_url = queue[queue_position]['url']
+        song_name = queue[queue_position]['name']
+        song_thumb = queue[queue_position]['thumbnail']
+        song_duration = queue[queue_position]['duration']
+        song_thumb_url = queue[queue_position]['thumbnail_url']
         song_thumbname = str(int(time.time())) + ".png"
 
         # Create the embed
-        if queue_list[server_id][queue_position]['artist'] and queue_list[server_id][queue_position]['album']:
-            song_desc = "Name: " + song_name + "\nArtist: " + queue_list[server_id][queue_position]['artist'] + "\nAlbum: " + queue_list[server_id][queue_position]['album']
+        if queue[queue_position]['artist'] and queue[queue_position]['album']:
+            song_desc = "Artist: " + queue[queue_position]['artist'] + "\nAlbum: " + queue[queue_position]['album']
         else:
-            song_desc = "Name: " + song_name + "\nURL: " + song_url
+            song_desc = ""
 
-        embed=discord.Embed(title="▶️ Playing: " + song_name, url=song_url, description=song_desc, color=0x42f5a7)
+        embed=discord.Embed(title=":arrow_forward: Playing: " + song_name, url=song_url, description=song_desc, color=0x42f5a7)
         if song_thumb is not None:
             await playing.add_files(discord.File(song_thumb, filename=song_thumbname))
             embed.set_thumbnail(url="attachment://" + song_thumbname)
@@ -328,21 +315,14 @@ async def play(ctx, *, query: str = None):
             )
             await playing.edit(embed=embed)
 
-        if server_info[server_id]["loop"]:
-            continue
-
-        # Increment the queue position by 1
-        try:
-            queue_list[server_id][0] += 1
-        except:
-            print(str(server_id) + " | " + "Queue position out of range.")
-            break
+        if not server_info[server_id]["loop"]:
+            # Increment the queue position by 1
+            try:
+                server_info[server_id]["queue_position"] += 1
+            except:
+                print(str(server_id) + " | " + "Queue position out of range.")
+                break
         print(str(server_id) + " | " + "Play position: "  + str(queue_position))
-
-        try:
-            await q(ctx)
-        except:
-            pass
 
     # Display the stop embed
     try:
@@ -358,8 +338,8 @@ async def play(ctx, *, query: str = None):
     # Disconnect from the voice channel if the loop finishes
     await voice_channel.disconnect()
 
-    queue_list[server_id].clear()
-    queue_list[server_id].insert(0, 1)
+    server_info[server_id]["queue"].clear()
+    server_info[server_id]["queue_position"] = 0
 
     # Remove all queued files and folders
     fileList = glob.glob(os.path.join(str(server_id),'*'))
@@ -370,10 +350,11 @@ async def play(ctx, *, query: str = None):
             print("Error while deleting file")
     os.rmdir(str(server_id))
 
+
 @bot.command()
 async def skip(ctx, direction = None, number = None):
     # Get all the id and channel info
-    server_id, voice_channel, user_voice_channel = await get_ids(ctx)
+    server_id, voice_channel, user_voice_channel = await utils.get_ids(ctx)
 
     if voice_channel is None:
         await ctx.send(":no_entry_sign: Bot must be playing to skip!", delete_after=3)
@@ -394,16 +375,15 @@ async def skip(ctx, direction = None, number = None):
         try:
             if direction.isnumeric():
                 if int(direction) > 0:
-                    queue_list[server_id][0] += int(direction) - 1
+                    server_info[server_id]["queue_position"] += int(direction) - 1
         except:
             pass
         if number != None and number > 0:
-            queue_list[server_id][0] += number - 1
+            server_info[server_id]["queue_position"] += number - 1
 
         # Stop the audio playback
         voice_channel.stop()
-
-    elif direction == "back" and not queue_list[server_id][0] == 1:
+    elif direction == "back" and not server_info[server_id]["queue_position"] == 1:
 
         # Decrement the queue position
         back = 2
@@ -412,19 +392,16 @@ async def skip(ctx, direction = None, number = None):
         if number != None and number > 0:
             back = number + 1
 
-        queue_list[server_id][0] -= back
+        server_info[server_id]["queue_position"] -= back
 
         # Stop the audio playback of the current track
         voice_channel.stop()
-
     elif direction == "to" and number is not None:
-        queue_list[server_id][0] = number - 1
+        server_info[server_id]["queue_position"] = number
 
         voice_channel.stop()
-
-    elif queue_list[server_id][0] == 1:
+    elif server_info[server_id]["queue_position"] == 0:
         await ctx.send(":no_entry_sign: Already at first song in queue.", delete_after=3)
-
     else:
         await ctx.send(":no_entry_sign: Invalid argument.", delete_after=3)
 
@@ -434,10 +411,11 @@ async def skip(ctx, direction = None, number = None):
     except:
         pass
 
+
 @bot.command()
 async def stop(ctx):
     # Get all the id and channel info
-    server_id, voice_channel, user_voice_channel = await get_ids(ctx)
+    server_id, voice_channel, user_voice_channel = await utils.get_ids(ctx)
 
     if voice_channel is None:
         await ctx.send(":no_entry_sign: Bot must be playing to stop!", delete_after=3)
@@ -447,16 +425,17 @@ async def stop(ctx):
         await ctx.send(":no_entry_sign: You must be in the same voice channel as the bot to use this command.", delete_after=3)
         return
 
-    queue_list[server_id].clear()
-    queue_list[server_id].insert(0, 1)
+    server_info[server_id]["queue"].clear()
+    server_info[server_id]["queue_position"] = 0
     await sleep(0.5)
     voice_channel.stop()
     await voice_channel.disconnect()
 
+
 @bot.command()
 async def pause(ctx):
     # Get all the id and channel info
-    server_id, voice_channel, user_voice_channel = await get_ids(ctx)
+    server_id, voice_channel, user_voice_channel = await utils.get_ids(ctx)
 
     if voice_channel is None or not voice_channel.is_playing():
         await ctx.send(":no_entry_sign: Bot must be playing to pause!", delete_after=3)
@@ -469,28 +448,16 @@ async def pause(ctx):
     global paused
     paused = True
 
+
 @bot.command()
 async def queue(ctx, action = None, selection = None):
     await q(ctx, action, selection)
 
+
 @bot.command()
 async def q(ctx, action = None, selection = None):
     # Get all the id and channel info
-    server_id, voice_channel, user_voice_channel = await get_ids(ctx)
-    global queue_embed
-    if action == "hide":
-        try:
-            queue_embed
-        except:
-            pass
-        else:
-            if queue_embed is None:
-                pass
-            else:
-                await queue_embed.delete()
-                queue_embed = None
-                del queue_embed
-        return
+    server_id, voice_channel, user_voice_channel = await utils.get_ids(ctx)
 
     if voice_channel is None:
         await ctx.send(":no_entry_sign: Bot must be in a channel to view the queue!", delete_after=3)
@@ -501,40 +468,34 @@ async def q(ctx, action = None, selection = None):
         return
 
     if action == "show" or action == "list" or action == None:
-        if action == "show":
-            try:
-                await q(ctx, "hide")
-            except:
-                pass
-
-        print(str(server_id) + " | " + "Updating queue, position: " + str(queue_list[server_id][0]))
-        x = 0
+        print(str(server_id) + " | " + "Updating queue, position: " + str(server_info[server_id]["queue_position"]))
+        index = 0
         qu = ""
         d = ""
         p = ""
         now_playing = "⠀"
-        for entry in queue_list[server_id]:
-            if x != 0:
-                if x == queue_list[server_id][0]:
-                    now_playing = ":arrow_right:"
-                else:
-                    now_playing = "⠀"
+        for entry in server_info[server_id]["queue"]:
+            if index == server_info[server_id]["queue_position"]:
+                now_playing = ":arrow_right:"
+            else:
+                now_playing = "⠀"
 
 
-                if len(entry['name']) >= 30:
-                    entry_cut = entry['name'][0:30]
-                else:
-                    entry_cut = entry['name']
+            if len(entry['name']) >= 30:
+                entry_cut = entry['name'][0:30]
+            else:
+                entry_cut = entry['name']
 
-                p += now_playing + "\n"
-                qu += "**" + str(x) + ":** " + entry_cut + "\n"
-                if str(strftime("%H", gmtime(int(float(entry['duration'])))))[0:1] == "00":
-                    d += str(strftime("%M:%S", gmtime(int(float(entry['duration']))))) + "\n"
-                else:
-                    d += str(strftime("%H:%M:%S", gmtime(int(float(entry['duration']))))) + "\n"
-            x += 1
+            p += now_playing + "\n"
+            qu += "**" + str(index + 1) + ":** " + entry_cut + "\n"
+            if str(strftime("%H", gmtime(int(float(entry['duration'])))))[0:1] == "00":
+                d += str(strftime("%M:%S", gmtime(int(float(entry['duration']))))) + "\n"
+            else:
+                d += str(strftime("%H:%M:%S", gmtime(int(float(entry['duration']))))) + "\n"
 
-        embed=discord.Embed(title="Queue:", description="", color=0xa032a8)
+            index += 1
+
+        embed = discord.Embed(title="Queue:", description="", color=0xa032a8)
         try:
             embed.add_field(name="⠀", value=p, inline=True)
             embed.add_field(name="List", value=qu, inline=True)
@@ -555,19 +516,20 @@ async def q(ctx, action = None, selection = None):
 
     if action == "remove":
         print(str(server_id) + " | " + "Removing item #" + str(selection) + " from queue")
+        selection = selection - 1
         selection = int(selection)
-        position = queue_list[server_id][0]
-        id = queue_list[server_id][selection]['id']
-        if queue_list[server_id][selection]['thumbnail'] != "/assets/unknown.png":
+        position = server_info[server_id]["queue_position"]
+        id = server_info[server_id]["queue"][selection]['id']
+        if server_info[server_id]["queue"][selection]['thumbnail'] != "/assets/unknown.png":
             thumbnail = None
         else:
-            thumbnail = queue_list[server_id][selection]['thumbnail']
+            thumbnail = server_info[server_id]["queue"][selection]['thumbnail']
 
         if selection is position:
             await ctx.send(":no_entry_sign: Error, cannot remove currently playing item", delete_after=3)
             return
 
-        if selection != 0 and not int(selection) > len(queue_list[server_id]):
+        if selection != 0 and not int(selection) > len(server_info[server_id]["queue"]):
             try:
                 os.remove(id)
                 if not thumbnail is None:
@@ -580,21 +542,22 @@ async def q(ctx, action = None, selection = None):
 
             if selection < position and position > 1:
                 try:
-                    queue_list[server_id][0] -= 1
+                    server_info[server_id]["queue_position"] -= 1
                 except:
                     print(str(server_id) + " | " + "Queue position out of range.")
                     pass
 
             await ctx.send(":white_check_mark: Removed item #" + str(selection) + " from queue.", delete_after=3)
-            queue_list[server_id].pop(selection)
+            server_info[server_id]["queue"].pop(selection)
             await q(ctx)
         else:
             await ctx.send(":no_entry_sign: Error, item #" + str(selection) + "not a valid queue item", delete_after=3)
         return
 
+
 @bot.command()
 async def loop(ctx, number = None):
-    server_id, voice_channel, user_voice_channel = await get_ids(ctx)
+    server_id, voice_channel, user_voice_channel = await utils.get_ids(ctx)
 
     if voice_channel is None or not voice_channel.is_playing() and not voice_channel.is_paused():
         await ctx.send(":no_entry_sign: Bot must be playing to loop!", delete_after=3)
@@ -616,11 +579,14 @@ async def loop(ctx, number = None):
         print(server_info[server_id]["loop"])
         return
 
+
 @bot.event
 async def on_command_error(ctx, error):
-    server_id, voice_channel, user_voice_channel = await get_ids(ctx)
+    server_id, voice_channel, user_voice_channel = await utils.get_ids(ctx)
     if isinstance(error, commands.CommandNotFound):
         await ctx.send("Unknown command", delete_after=3)
+    else:
+        print(error)
 
 # Run the bot using the Discord bot token
-bot.run("<>")
+bot.run("")

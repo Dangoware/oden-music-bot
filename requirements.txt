@@ -1,5 +1,5 @@
 discord==2.3
-ffmpeg==1.4
+ffmpeg-python==0.2
 stringprogressbar==1.1
 pynacl==1.5
 yt-dlp==2024.8.6
