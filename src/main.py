@@ -81,9 +81,6 @@ async def play(ctx, *, query: str = None):
         await voice_channel.disconnect()
         return
 
-    if voice_channel.is_playing():
-        await ctx.send("The bot is already playing, adding song to queue", delete_after=3)
-
     if ctx.message.attachments:
         downloading = 1
         notice = await ctx.send(":arrow_double_up: Uploading...", suppress_embeds=True)
@@ -230,7 +227,7 @@ async def play(ctx, *, query: str = None):
         await ctx.send("Something went wrong, please try a different query.", delete_after=3)
         return
 
-    print(str(server_id) + " | " + str(item))
+    print(str(server_id) + " | " + str(item["name"]))
 
     if voice_channel.is_playing() or downloading == 1:
         return
@@ -276,9 +273,9 @@ async def play(ctx, *, query: str = None):
                 stdout=subprocess.PIPE,
             ).stdout
             pipe = True
-            print("Playing song through yt-dlp")
+            print(str(server_id) + " | " + "Playing song through yt-dlp")
         else:
-            print("Playing song from file")
+            print(str(server_id) + " | " + "Playing song from file")
             song_source = song_id
 
         # Play the converted audio in the voice channel from the temporary file
@@ -397,7 +394,7 @@ async def skip(ctx, direction = None, number = None):
         # Stop the audio playback of the current track
         voice_channel.stop()
     elif direction == "to" and number is not None:
-        server_info[server_id]["queue_position"] = number
+        server_info[server_id]["queue_position"] = number - 1
 
         voice_channel.stop()
     elif server_info[server_id]["queue_position"] == 0:
@@ -473,6 +470,7 @@ async def q(ctx, action = None, selection = None):
         qu = ""
         d = ""
         p = ""
+        total_duration = 0
         now_playing = "⠀"
         for entry in server_info[server_id]["queue"]:
             if index == server_info[server_id]["queue_position"]:
@@ -488,18 +486,22 @@ async def q(ctx, action = None, selection = None):
 
             p += now_playing + "\n"
             qu += "**" + str(index + 1) + ":** " + entry_cut + "\n"
-            if str(strftime("%H", gmtime(int(float(entry['duration'])))))[0:1] == "00":
+            if int(entry['duration']) < 3600:
                 d += str(strftime("%M:%S", gmtime(int(float(entry['duration']))))) + "\n"
             else:
                 d += str(strftime("%H:%M:%S", gmtime(int(float(entry['duration']))))) + "\n"
 
+            if index >= server_info[server_id]["queue_position"]:
+                total_duration += entry['duration']
             index += 1
 
-        embed = discord.Embed(title="Queue:", description="", color=0xa032a8)
+        total_duration = str(strftime("%H:%M:%S", gmtime(int(float(total_duration)))))
+
+        embed = discord.Embed(title=f"Queue ({total_duration} left):", description="", color=0xa032a8)
         try:
             embed.add_field(name="⠀", value=p, inline=True)
             embed.add_field(name="List", value=qu, inline=True)
-            embed.add_field(name="Length", value=d, inline=True)
+            embed.add_field(name=f"Length", value=d, inline=True)
         except:
             embed.add_field(name="List", value="Queue is **empty**", inline=False)
 
@@ -514,13 +516,13 @@ async def q(ctx, action = None, selection = None):
                 await queue_embed.edit(embed=embed)
         return
 
-    if action == "remove":
+    if action == "remove" and selection is not None:
         print(str(server_id) + " | " + "Removing item #" + str(selection) + " from queue")
-        selection = selection - 1
-        selection = int(selection)
-        position = server_info[server_id]["queue_position"]
-        id = server_info[server_id]["queue"][selection]['id']
-        if server_info[server_id]["queue"][selection]['thumbnail'] != "/assets/unknown.png":
+        selection = int(selection) - 1
+        current_position = server_info[server_id]["queue_position"]
+
+        path = server_info[server_id]["queue"][selection]["id"]
+        if server_info[server_id]["queue"][selection]["thumbnail"] != "/assets/unknown.png":
             thumbnail = None
         else:
             thumbnail = server_info[server_id]["queue"][selection]['thumbnail']
@@ -529,10 +531,10 @@ async def q(ctx, action = None, selection = None):
             await ctx.send(":no_entry_sign: Error, cannot remove currently playing item", delete_after=3)
             return
 
-        if selection != 0 and not int(selection) > len(server_info[server_id]["queue"]):
+        if selection < 0 and not int(selection) > len(server_info[server_id]["queue"]):
             try:
-                os.remove(id)
-                if not thumbnail is None:
+                os.remove(path)
+                if thumbnail is not None:
                     os.remove(thumbnail)
                 else:
                     pass
@@ -550,6 +552,8 @@ async def q(ctx, action = None, selection = None):
             await ctx.send(":white_check_mark: Removed item #" + str(selection) + " from queue.", delete_after=3)
             server_info[server_id]["queue"].pop(selection)
             await q(ctx)
+        elif action == "remove" and selection is None:
+            await ctx.send(":no_entry_sign: Error, please select a queue item to remove", delete_after=3)
         else:
             await ctx.send(":no_entry_sign: Error, item #" + str(selection) + "not a valid queue item", delete_after=3)
         return
