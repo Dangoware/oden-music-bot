@@ -12,14 +12,12 @@ from pprint import pprint
 ## LOCAL IMPORTS ##
 import utils
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig()
 intents = discord.Intents.default()
 intents.message_content = True
 
-# Dictionary to store queues between servers
+# Dictionary to store queues for individual servers
 server_info = {}
-downloading = 0
-paused = False
 
 # Create a new Discord client
 bot = commands.Bot(command_prefix="!",intents=discord.Intents.all(), shard_count=1)
@@ -38,13 +36,14 @@ async def on_ready():
 @bot.command()
 async def play(ctx, *, query: str = None):
     # Get all the id and channel info
-    server_id, voice_channel, user_voice_channel = await utils.get_ids(ctx)
+    server_id, voice_channel, user_voice_channel = await utils.getIds(ctx)
 
     # Create a queue and info dictionary for the current server
     if server_id not in server_info:
         server_info[server_id] = {
             "loop": False,
             "paused": False,
+            "elapsed": 0,
             "queue_position": 0,
             "queue": [],
         }
@@ -65,7 +64,7 @@ async def play(ctx, *, query: str = None):
         voice_channel = await user_voice_channel.channel.connect()
 
     # If the user is not in a voice channel or the voice channel is not the same one as the bot, return an error message
-    if user_voice_channel.channel != voice_channel.channel:
+    if await utils.notSameChannel(ctx):
         await ctx.send(":no_entry_sign: You must be in the same voice channel as the bot to use this command.")
         return
 
@@ -86,10 +85,9 @@ async def play(ctx, *, query: str = None):
         return
 
     if ctx.message.attachments:
-        downloading = 1
-        notice = await ctx.send(":arrow_double_up: Uploading...", suppress_embeds=True)
+        notice = await ctx.send(":arrow_double_up: Uploading file...", suppress_embeds=True)
         for song in ctx.message.attachments:
-            filename, thumbname = await utils.getFileNames(server_id)
+            filename, thumbname = utils.getFileNames(server_id)
 
             # Make sure the file is either audio or video
             filetype = song.content_type
@@ -97,70 +95,28 @@ async def play(ctx, *, query: str = None):
                 await notice.edit(content=":no_entry_sign: Not a valid video or audio file...")
                 continue
 
+            # Save the song to the temp folder
             await song.save(filename)
 
-            # Grab thumbnail from the file
-            (ffmpeg
-                .input(filename,t=1)
-                .output(thumbname, f="image2")
-                .overwrite_output()
-                .run())
+            # Get all the info about the file and create an "item" for it
+            item = utils.parseMediaFile(song, filename, thumbname)
 
-
-            # Grab metadata from file
-            try:
-                metadata = ffmpeg.probe(filename)
-            except:
-                metadata = {}
-
-            file_title = song.filename
-            if "TITLE" in metadata["format"]["tags"]:
-                file_title = metadata["format"]["tags"]["TITLE"]
-
-            file_artist = ""
-            if "ARTIST" in metadata["format"]["tags"]:
-                file_artist = metadata["format"]["tags"]["ARTIST"]
-
-            file_album = ""
-            if "ALBUM" in metadata["format"]["tags"]:
-                file_album = metadata["format"]["tags"]["ALBUM"]
-
-
-            if os.path.exists(thumbname):
-                thumbnail = thumbname
-            else:
-                thumbnail = "assets/unknown.png"
-
-            try:
-                duration = metadata['format']['duration']
-            except:
-                duration = None
-
-            # Create the item dictionary
-            item = {
-                "name": file_title.rstrip(),
-                "artist": file_artist.rstrip(),
-                "album": file_album.rstrip(),
-                "url": song.url,
-                "id": filename,
-                "thumbnail": thumbnail,
-                "thumbnail_url": None,
-                "duration": duration
-            }
-
-            await notice.edit(content=":white_check_mark: Successfully uploaded \"" + song.filename + "\"")
+            await notice.edit(content=":white_check_mark: Successfully uploaded \"" + item["name"] + "\"", delete_after=3)
             server_info[server_id]["queue"].append(item)
-
-            downloading = 0
     elif query[0:4] != "http" and query[0:3] != "www":
-        filename, thumbname = await utils.getFileNames(server_id)
+        filename, thumbname = utils.getFileNames(server_id)
 
         # Let the user know the bot is searching for a video
         notice = await ctx.send(":mag_right: Searching for \"" + query + "\" ...", suppress_embeds=True)
 
         # Search metadata for youtube video
         with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
-            info = ydl.extract_info(f"ytsearch:{query}", download = False)["entries"][0]
+            search_list = ydl.extract_info(f"ytsearch:{query}", download = False)["entries"]
+            if len(search_list) == 0:
+                await notice.edit(content=":question: No songs found for query, try something else!", delete_after=3)
+                return
+
+            info = search_list[0]
             title = info["title"]
             audio_url = info["webpage_url"]
             thumb_url = info["thumbnail"]
@@ -177,20 +133,18 @@ async def play(ctx, *, query: str = None):
             "id": filename,
             "thumbnail": None,
             "thumbnail_url": thumb_url,
-            "duration": duration
+            "duration": int(float(duration))
         }
 
         await notice.edit(content=":white_check_mark: Found " + title + ": " + audio_url, suppress=True, delete_after=3)
         server_info[server_id]["queue"].append(item)
-        downloading = 0
     elif query[0:4] == "http" or query[0:3] == "www":
-        filename, thumbname = await utils.getFileNames(server_id)
+        filename, thumbname = utils.getFileNames(server_id)
 
-        # Let the user know the bot is searching for a video
-        notice = await ctx.send(":mag_right: Searching for \"" + query + "\" ...", suppress_embeds=True)
+        notice = await ctx.send(":mag_right: Adding video \"" + query + "\" ...", suppress_embeds=True)
 
-        if query[0:17] != "https://www.youtu" and query[0:13] != "https://youtu":
-            await notice.edit(content=":no_entry_sign: Must input a valid query or attachment.", delete_after=3)
+        if "youtube" not in query and "youtu.be" not in query:
+            await notice.edit(content=":no_entry_sign: Must be a valid youtube link.", delete_after=3)
             await voice_channel.disconnect()
             return
 
@@ -212,12 +166,11 @@ async def play(ctx, *, query: str = None):
             "id": filename,
             "thumbnail": None,
             "thumbnail_url": thumb_url,
-            "duration": duration
+            "duration": int(float(duration))
         }
 
         await notice.edit(content=":white_check_mark: Found \"" + title + "\": " + query, suppress=True, delete_after=3)
         server_info[server_id]["queue"].append(item)
-        downloading = 0
     else:
         print("Error")
         await ctx.send("Something went wrong, please try a different query.", delete_after=3)
@@ -225,14 +178,14 @@ async def play(ctx, *, query: str = None):
 
     print(str(server_id) + " | " + str(item["name"]))
 
-    if voice_channel.is_playing() or downloading == 1:
+    if voice_channel.is_playing():
         return
-
-    embed = discord.Embed(title="▶️ Playing: ", description="Name: " + "\nURL: ", color=0x42f5a7)
-    playing = await ctx.send(embed=embed)
 
     # Loop that repeats as long as the queue position has not reached the length of the queue
     while len(server_info[server_id]["queue"]) >= server_info[server_id]["queue_position"]:
+        embed = discord.Embed(title="▶️ Playing: ", description="Name: " + "\nURL: ", color=0x42f5a7)
+        playing = await ctx.send(embed=embed)
+
         # Get the current queue position
         queue_position = server_info[server_id]["queue_position"]
         queue = server_info[server_id]["queue"]
@@ -252,14 +205,14 @@ async def play(ctx, *, query: str = None):
         else:
             song_desc = ""
 
-        embed=discord.Embed(title=":arrow_forward: Playing: " + song_name, url=song_url, description=song_desc, color=0x42f5a7)
+        embed = discord.Embed(title=":arrow_forward: Playing: " + song_name, url=song_url, description=song_desc, color=0x42f5a7)
         if song_thumb is not None:
             await playing.add_files(discord.File(song_thumb, filename=song_thumbname))
             embed.set_thumbnail(url="attachment://" + song_thumbname)
         elif song_thumb_url is not None:
             embed.set_thumbnail(url=song_thumb_url)
 
-        await playing.edit(embed=embed)
+        await playing.edit(embed = embed)
 
         song_source = None
         pipe = False
@@ -276,25 +229,20 @@ async def play(ctx, *, query: str = None):
 
         # Play the converted audio in the voice channel from the temporary file
         # or the FFMPEG stream
-        player = voice_channel.play(discord.FFmpegOpusAudio(source=song_source, pipe=pipe))
+        player = voice_channel.play(discord.FFmpegPCMAudio(source=song_source, pipe=pipe))
         time1 = int(time.time())
-        total = int(float(song_duration))
+        total = song_duration
 
         # Wait for audio to finish playing
         while voice_channel.is_playing() or voice_channel.is_paused():
             await sleep(1)
             time2 = int(time.time())
-            if paused:
-                time1 = time2 - current
-            else:
-                current = time2 - time1
+            current = time2 - time1
+            server_info[server_id]["elapsed"] = current
             bardata = progressBar.splitBar(total, current, size=20)
 
             # Create embed
-            if not paused:
-                embed=discord.Embed(title="▶️ Playing: " + song_name, url=song_url, description=song_desc, color=0x42f5a7)
-            else:
-                embed=discord.Embed(title="⏸ Paused: " + song_name, url=song_url, description=song_desc, color=0x42f5a7)
+            embed=discord.Embed(title="▶️ Playing: " + song_name, url=song_url, description=song_desc, color=0x42f5a7)
 
             if song_thumb is not None:
                 embed.set_thumbnail(url="attachment://" + song_thumbname)
@@ -308,6 +256,7 @@ async def play(ctx, *, query: str = None):
             )
             await playing.edit(embed=embed)
 
+        server_info[server_id]["elapsed"] = 0
         if not server_info[server_id]["loop"]:
             # Increment the queue position by 1
             try:
@@ -317,17 +266,9 @@ async def play(ctx, *, query: str = None):
                 break
         print(str(server_id) + " | " + "Play position: "  + str(queue_position))
 
-    # Display the stop embed
-    try:
-        await q(ctx, "hide")
-    except:
-        pass
-    embed=discord.Embed(title="⏹️ Finished Queue: " + song_name, url=song_url, description="Name: " + song_name + "\nURL: " + song_url, color=0x42f5a7)
-    embed.set_thumbnail(url="attachment://" + song_thumbname)
-    await playing.edit(embed=embed)
-
-    await ctx.send("Finished queue, disconnecting.", suppress_embeds=True, delete_after=3)
     print(str(server_id) + " | " + "Queue finished.")
+
+
     # Disconnect from the voice channel if the loop finishes
     await voice_channel.disconnect()
 
@@ -347,13 +288,13 @@ async def play(ctx, *, query: str = None):
 @bot.command()
 async def skip(ctx, direction = None, number = None):
     # Get all the id and channel info
-    server_id, voice_channel, user_voice_channel = await utils.get_ids(ctx)
+    server_id, voice_channel, user_voice_channel = await utils.getIds(ctx)
 
     if voice_channel is None:
         await ctx.send(":no_entry_sign: Bot must be playing to skip!", delete_after=3)
         return
 
-    if user_voice_channel is None or user_voice_channel.channel != voice_channel.channel:
+    if await utils.notSameChannel(ctx):
         # If the user is not in a voice channel, return an error message
         await ctx.send(":no_entry_sign: You must be in the same voice channel as the bot to use this command.", delete_after=3)
         return
@@ -376,7 +317,7 @@ async def skip(ctx, direction = None, number = None):
 
         # Stop the audio playback
         voice_channel.stop()
-    elif direction == "back" and not server_info[server_id]["queue_position"] == 1:
+    elif direction == "back" and not server_info[server_id]["queue_position"] == 0:
 
         # Decrement the queue position
         back = 2
@@ -398,22 +339,17 @@ async def skip(ctx, direction = None, number = None):
     else:
         await ctx.send(":no_entry_sign: Invalid argument.", delete_after=3)
 
-    await sleep(2)
-    try:
-        await q(ctx)
-    except:
-        pass
-
 
 @bot.command()
 async def stop(ctx):
     # Get all the id and channel info
-    server_id, voice_channel, user_voice_channel = await utils.get_ids(ctx)
+    server_id, voice_channel, user_voice_channel = await utils.getIds(ctx)
 
     if voice_channel is None:
         await ctx.send(":no_entry_sign: Bot must be playing to stop!", delete_after=3)
         return
-    if user_voice_channel is None or user_voice_channel.channel != voice_channel.channel:
+
+    if await utils.notSameChannel(ctx):
         # If the user is not in a voice channel, return an error message
         await ctx.send(":no_entry_sign: You must be in the same voice channel as the bot to use this command.", delete_after=3)
         return
@@ -424,22 +360,21 @@ async def stop(ctx):
     voice_channel.stop()
     await voice_channel.disconnect()
 
-
-@bot.command()
-async def pause(ctx):
-    # Get all the id and channel info
-    server_id, voice_channel, user_voice_channel = await utils.get_ids(ctx)
-
-    if voice_channel is None or not voice_channel.is_playing():
-        await ctx.send(":no_entry_sign: Bot must be playing to pause!", delete_after=3)
-        return
-    if user_voice_channel is None or user_voice_channel.channel != voice_channel.channel:
-        # If the user is not in a voice channel, return an error message
-        await ctx.send(":no_entry_sign: You must be in the same voice channel as the bot to use this command.", delete_after=3)
-        return
-    voice_channel.pause()
-    global paused
-    paused = True
+#
+# @bot.command()
+# async def pause(ctx):
+#     # Get all the id and channel info
+#     server_id, voice_channel, user_voice_channel = await utils.getIds(ctx)
+#
+#     if voice_channel is None or not voice_channel.is_playing():
+#         await ctx.send(":no_entry_sign: Bot must be playing to pause!", delete_after=3)
+#         return
+#     if user_voice_channel is None or user_voice_channel.channel != voice_channel.channel:
+#         # If the user is not in a voice channel, return an error message
+#         await ctx.send(":no_entry_sign: You must be in the same voice channel as the bot to use this command.", delete_after=3)
+#         return
+#
+#     voice_channel.pause()
 
 
 @bot.command()
@@ -450,12 +385,13 @@ async def queue(ctx, action = None, selection = None):
 @bot.command()
 async def q(ctx, action = None, selection = None):
     # Get all the id and channel info
-    server_id, voice_channel, user_voice_channel = await utils.get_ids(ctx)
+    server_id, voice_channel, user_voice_channel = await utils.getIds(ctx)
 
     if voice_channel is None:
         await ctx.send(":no_entry_sign: Bot must be in a channel to view the queue!", delete_after=3)
         return
-    if user_voice_channel is None or user_voice_channel.channel != voice_channel.channel:
+
+    if await utils.notSameChannel(ctx):
         # If the user is not in a voice channel, return an error message
         await ctx.send(":no_entry_sign: You must be in the same voice channel as the bot to use this command.", delete_after=3)
         return
@@ -463,16 +399,15 @@ async def q(ctx, action = None, selection = None):
     if action == "show" or action == "list" or action == None:
         print(str(server_id) + " | " + "Updating queue, position: " + str(server_info[server_id]["queue_position"]))
         index = 0
-        qu = ""
-        d = ""
-        p = ""
+        queue_string = ""
+        duration_string = ""
+        position_string = ""
         total_duration = 0
-        now_playing = "⠀"
         for entry in server_info[server_id]["queue"]:
             if index == server_info[server_id]["queue_position"]:
-                now_playing = ":arrow_right:"
+                position_string += ":arrow_right:\n"
             else:
-                now_playing = "⠀"
+                position_string += "⠀\n"
 
 
             if len(entry['name']) >= 30:
@@ -480,39 +415,33 @@ async def q(ctx, action = None, selection = None):
             else:
                 entry_cut = entry['name']
 
-            p += now_playing + "\n"
-            qu += "**" + str(index + 1) + ":** " + entry_cut + "\n"
-            if int(entry['duration']) < 3600:
-                d += str(strftime("%M:%S", gmtime(int(float(entry['duration']))))) + "\n"
+            queue_string += "**" + str(index + 1) + ":** " + entry_cut + "\n"
+            if entry['duration'] < 3600:
+                duration_string += str(strftime("%M:%S", gmtime(entry['duration']))) + "\n"
             else:
-                d += str(strftime("%H:%M:%S", gmtime(int(float(entry['duration']))))) + "\n"
+                duration_string += str(strftime("%H:%M:%S", gmtime(entry['duration']))) + "\n"
 
-            if index >= server_info[server_id]["queue_position"]:
+            if index == server_info[server_id]["queue_position"]:
+                total_duration += entry['duration'] - server_info[server_id]["elapsed"]
+            if index > server_info[server_id]["queue_position"]:
                 total_duration += entry['duration']
             index += 1
 
-        total_duration = str(strftime("%H:%M:%S", gmtime(int(float(total_duration)))))
+        # Calculate the time remaining in the queue
+        total_duration = str(strftime("%H:%M:%S", gmtime(total_duration)))
 
         embed = discord.Embed(title=f"Queue ({total_duration} left):", description="", color=0xa032a8)
         try:
-            embed.add_field(name="⠀", value=p, inline=True)
-            embed.add_field(name="List", value=qu, inline=True)
-            embed.add_field(name=f"Length", value=d, inline=True)
+            embed.add_field(name="⠀", value=position_string, inline=True)
+            embed.add_field(name="List", value=queue_string, inline=True)
+            embed.add_field(name=f"Length", value=duration_string, inline=True)
         except:
             embed.add_field(name="List", value="Queue is **empty**", inline=False)
 
-        try:
-            queue_embed
-        except:
-            queue_embed = await ctx.send(embed=embed)
-        else:
-            if queue_embed is None:
-                queue_embed = await ctx.send(embed=embed)
-            else:
-                await queue_embed.edit(embed=embed)
-        return
+        # Send the constructed queue
+        queue_embed = await ctx.send(embed=embed)
 
-    if action == "remove" and selection is not None:
+    elif action == "remove" and selection is not None:
         print(str(server_id) + " | " + "Removing item #" + str(selection) + " from queue")
         selection = int(selection) - 1
         current_position = server_info[server_id]["queue_position"]
@@ -527,7 +456,7 @@ async def q(ctx, action = None, selection = None):
             await ctx.send(":no_entry_sign: Error, cannot remove currently playing item", delete_after=3)
             return
 
-        if selection < 0 and not int(selection) > len(server_info[server_id]["queue"]):
+        if not selection < 0 and not selection > len(server_info[server_id]["queue"]):
             try:
                 os.remove(path)
                 if thumbnail is not None:
@@ -545,19 +474,18 @@ async def q(ctx, action = None, selection = None):
                     print(str(server_id) + " | " + "Queue position out of range.")
                     pass
 
-            await ctx.send(":white_check_mark: Removed item #" + str(selection) + " from queue.", delete_after=3)
+            await ctx.send(":white_check_mark: Removed item #" + str(selection + 1) + " from queue.", delete_after=3)
             server_info[server_id]["queue"].pop(selection)
             await q(ctx)
         elif action == "remove" and selection is None:
             await ctx.send(":no_entry_sign: Error, please select a queue item to remove", delete_after=3)
         else:
             await ctx.send(":no_entry_sign: Error, item #" + str(selection) + "not a valid queue item", delete_after=3)
-        return
 
 
 @bot.command()
 async def loop(ctx, number = None):
-    server_id, voice_channel, user_voice_channel = await utils.get_ids(ctx)
+    server_id, voice_channel, user_voice_channel = await utils.getIds(ctx)
 
     if voice_channel is None or not voice_channel.is_playing() and not voice_channel.is_paused():
         await ctx.send(":no_entry_sign: Bot must be playing to loop!", delete_after=3)
@@ -582,7 +510,7 @@ async def loop(ctx, number = None):
 
 @bot.event
 async def on_command_error(ctx, error):
-    server_id, voice_channel, user_voice_channel = await utils.get_ids(ctx)
+    server_id, voice_channel, user_voice_channel = await utils.getIds(ctx)
     if isinstance(error, commands.CommandNotFound):
         await ctx.send("Unknown command", delete_after=3)
     else:
