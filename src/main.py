@@ -10,6 +10,7 @@ import json
 from pprint import pprint
 
 ## LOCAL IMPORTS ##
+#####
 import utils
 
 logging.basicConfig()
@@ -85,13 +86,15 @@ async def play(ctx, *, query: str = None):
         return
 
     if ctx.message.attachments:
-        notice = await ctx.send(":arrow_double_up: Uploading file...", suppress_embeds=True)
+        success_list = []
+        notice = await ctx.send(":arrow_double_up: Uploading...", suppress_embeds=True)
+        success_string = ":white_check_mark: Successfully uploaded: \n"
         for song in ctx.message.attachments:
             filename, thumbname = utils.getFileNames(server_id)
 
             # Make sure the file is either audio or video
             filetype = song.content_type
-            if filetype.split('/')[0] != "audio" and filetype.split('/')[0] != "video":
+            if filetype is None or (filetype.split('/')[0] != "audio" and filetype.split('/')[0] != "video"):
                 await notice.edit(content=":no_entry_sign: Not a valid video or audio file...")
                 continue
 
@@ -100,11 +103,20 @@ async def play(ctx, *, query: str = None):
 
             # Get all the info about the file and create an "item" for it
             item = utils.parseMediaFile(song, filename, thumbname)
+            success_list.append(item["name"]);
 
-            await notice.edit(content=":white_check_mark: Successfully uploaded \"" + item["name"] + "\"", delete_after=3)
+            success_string += " –`" + item["name"] + "`\n"
+
+            await notice.edit(content=success_string)
             server_info[server_id]["queue"].append(item)
+
+        if len(success_list) > 0:
+            await notice.edit(content=success_string, delete_after=3)
+        else:
+            await notice.edit(content=f":no_entry_sign: No files successfully uploaded.", delete_after=3)
+            return
     elif query[0:4] != "http" and query[0:3] != "www":
-        filename, thumbname = utils.getFileNames(server_id)
+        filename, _ = utils.getFileNames(server_id)
 
         # Let the user know the bot is searching for a video
         notice = await ctx.send(":mag_right: Searching for \"" + query + "\" ...", suppress_embeds=True)
@@ -133,13 +145,14 @@ async def play(ctx, *, query: str = None):
             "id": filename,
             "thumbnail": None,
             "thumbnail_url": thumb_url,
-            "duration": int(float(duration))
+            "duration": int(float(duration)),
+            "color": None,
         }
 
         await notice.edit(content=":white_check_mark: Found " + title + ": " + audio_url, suppress=True, delete_after=3)
         server_info[server_id]["queue"].append(item)
     elif query[0:4] == "http" or query[0:3] == "www":
-        filename, thumbname = utils.getFileNames(server_id)
+        filename, _ = utils.getFileNames(server_id)
 
         notice = await ctx.send(":mag_right: Adding video \"" + query + "\" ...", suppress_embeds=True)
 
@@ -166,7 +179,8 @@ async def play(ctx, *, query: str = None):
             "id": filename,
             "thumbnail": None,
             "thumbnail_url": thumb_url,
-            "duration": int(float(duration))
+            "duration": int(float(duration)),
+            "color": None,
         }
 
         await notice.edit(content=":white_check_mark: Found \"" + title + "\": " + query, suppress=True, delete_after=3)
@@ -176,8 +190,7 @@ async def play(ctx, *, query: str = None):
         await ctx.send("Something went wrong, please try a different query.", delete_after=3)
         return
 
-    print(str(server_id) + " | " + str(item["name"]))
-
+    # It's already playing, don't start another playback stream!
     if voice_channel.is_playing():
         return
 
@@ -186,26 +199,31 @@ async def play(ctx, *, query: str = None):
         embed = discord.Embed(title="▶️ Playing: ", description="Name: " + "\nURL: ", color=0x42f5a7)
         playing = await ctx.send(embed=embed)
 
-        # Get the current queue position
+        # Get the current queue item
         queue_position = server_info[server_id]["queue_position"]
         queue = server_info[server_id]["queue"]
+        current_item = queue[queue_position]
 
         # Set song variables
-        song_id = queue[queue_position]['id']
-        song_url = queue[queue_position]['url']
-        song_name = queue[queue_position]['name']
-        song_thumb = queue[queue_position]['thumbnail']
-        song_duration = queue[queue_position]['duration']
-        song_thumb_url = queue[queue_position]['thumbnail_url']
+        song_id = current_item['id']
+        song_url = current_item['url']
+        song_name = current_item['name']
+        song_thumb = current_item['thumbnail']
+        song_duration = current_item['duration']
+        song_thumb_url = current_item['thumbnail_url']
         song_thumbname = str(int(time.time())) + ".png"
 
+        color = 0x42f5a7
+        if current_item["color"] is not None:
+            color = (current_item["color"][0] << 16) | (current_item["color"][1] << 8) | current_item["color"][2]
+
         # Create the embed
-        if queue[queue_position]['artist'] and queue[queue_position]['album']:
-            song_desc = "Artist: " + queue[queue_position]['artist'] + "\nAlbum: " + queue[queue_position]['album']
+        if current_item["artist"] and current_item["album"]:
+            song_desc = "Artist: " + current_item['artist'] + "\nAlbum: " + current_item['album']
         else:
             song_desc = ""
 
-        embed = discord.Embed(title=":arrow_forward: Playing: " + song_name, url=song_url, description=song_desc, color=0x42f5a7)
+        embed = discord.Embed(title=":arrow_forward: Playing: " + song_name, url=song_url, description=song_desc, color=color)
         if song_thumb is not None:
             await playing.add_files(discord.File(song_thumb, filename=song_thumbname))
             embed.set_thumbnail(url="attachment://" + song_thumbname)
@@ -216,7 +234,7 @@ async def play(ctx, *, query: str = None):
 
         song_source = None
         pipe = False
-        if song_url is not None:
+        if song_url is not None and song_url != "":
             song_source = subprocess.Popen(
                 ['yt-dlp', '-q', '-o', '-', '-x', song_url],
                 stdout=subprocess.PIPE,
@@ -242,7 +260,7 @@ async def play(ctx, *, query: str = None):
             bardata = progressBar.splitBar(total, current, size=20)
 
             # Create embed
-            embed=discord.Embed(title="▶️ Playing: " + song_name, url=song_url, description=song_desc, color=0x42f5a7)
+            embed=discord.Embed(title="▶️ Playing: " + song_name, url=song_url, description=song_desc, color=color)
 
             if song_thumb is not None:
                 embed.set_thumbnail(url="attachment://" + song_thumbname)
@@ -275,13 +293,14 @@ async def play(ctx, *, query: str = None):
     server_info[server_id]["queue"].clear()
     server_info[server_id]["queue_position"] = 0
 
-    # Remove all queued files and folders
+    # Remove all queued files and folders... This is a bit dangerous, maybe it
+    # should be made failsafe somehow? TODO
     fileList = glob.glob(os.path.join(str(server_id),'*'))
     for filePath in fileList:
         try:
             os.remove(filePath)
         except OSError:
-            print("Error while deleting file")
+            print("Error while deleting file ", filePath)
     os.rmdir(str(server_id))
 
 
@@ -467,7 +486,7 @@ async def q(ctx, action = None, selection = None):
                 print(str(server_id) + " | " + "Error while deleting song or thumbnail")
                 pass
 
-            if selection < current_position and current_position > 1:
+            if selection < current_position and current_position:
                 try:
                     server_info[server_id]["queue_position"] -= 1
                 except:

@@ -1,4 +1,5 @@
 import uuid, os, ffmpeg
+from colorthief import ColorThief
 
 async def getIds(ctx):
     """Get server id, voice channel id, and user voice channel id"""
@@ -23,11 +24,10 @@ async def notSameChannel(ctx) -> bool:
 def getFileNames(server_id):
     """Get the UUID-based filenames for temp files"""
 
-    downloading = 1
     # Get the current unix timestamp to the nearest millisecond for the filename
     uuid_stamp = uuid.uuid1()
-    audioname = str(uuid_stamp) + "audio"
-    thumbname = str(uuid_stamp) + "image"
+    audioname = str(uuid_stamp) + "_audio"
+    thumbname = str(uuid_stamp) + "_image"
 
     # Create the id and thumbnail of the attachment as "tmp<timestamp>.flac" and "tmp<timestamp>.png" respectively
     # And add the server ID as the path, making it unique
@@ -65,8 +65,12 @@ def parseMediaFile(discord_file, tmp_filename: str, tmp_thumbname: str):
         file_album = metadata["format"]["tags"]["ALBUM"]
 
 
+    color = None
     if os.path.exists(tmp_thumbname):
         thumbnail = tmp_thumbname
+        color_thief = ColorThief(thumbnail)
+        color = color_thief.get_color(quality=1)
+        print(color)
     else:
         thumbnail = "assets/unknown.png"
 
@@ -80,11 +84,12 @@ def parseMediaFile(discord_file, tmp_filename: str, tmp_thumbname: str):
         "name": file_title.rstrip(),
         "artist": file_artist.rstrip(),
         "album": file_album.rstrip(),
-        "url": discord_file.url,
+        "url": None,
         "id": tmp_filename,
         "thumbnail": thumbnail,
         "thumbnail_url": None,
-        "duration": int(float(duration))
+        "duration": int(float(duration)),
+        "color": color,
     }
 
     return item
